@@ -45,8 +45,6 @@ float dew_point_dht = 00.0;
 
 /*----User Configurations----*/
 String devicename = "Omega3Galil";
-float sens_inter = 20;   // sensor interval time in sec, default is 5 Sec
-float http_inter = 120; // http send data interval  in sec, default is 120 sec;
 bool user_alarm = true;
 int speaker_volume = 3;
 float temp_upper_limit = -100;
@@ -55,12 +53,13 @@ float humid_upper_limit = -100;
 float humid_lower_limit = -100;
 
 /*----interval rate----*/
-unsigned long currentMillis;
-static int thingspeak_REFRESH_INTERVAL = http_inter*1000;
-static unsigned long thingspeak_RefreshTime = 0;
-
+float sens_inter = 20;   // sensor interval time in sec, default is 5 Sec
+float http_inter = 120; // http send data interval  in sec, default is 120 sec;
+int sendinloop = http_inter / sens_inter; // every how many loops data need to be sent
+int loop_counter = 1; // count how many loop pass
+unsigned long startTime = 0;
 static int read_interval = sens_inter*1000;
-static unsigned long refreshtime = 0;
+unsigned long stopTime = read_interval;
 
 
 String updatetime(){
@@ -132,7 +131,7 @@ void SensorInterval(){
 		}
 		if(b == "ok") break;
   }
-  thingspeak_REFRESH_INTERVAL = http_inter*1000;
+  sendinloop = http_inter / sens_inter;
 }
 
 void deviceNaming(){
@@ -227,6 +226,11 @@ void SHTsensor(){
 void DHTsensor(){
   dht_temp = dht.readTemperature();
   dht_humid = dht.readHumidity();
+  if (isnan(dht_humid) || isnan(dht_temp)) {
+    Serial.println("Failed to read from DHT sensor!");
+    dht_temp = 00.0;
+    dht_humid = 00.0;
+  }
 }
 
 void writeFile(fs::FS &fs, const char *filename, const char *message){
@@ -305,9 +309,12 @@ void setup(){
 } 
 
 void loop(){
-  currentMillis = millis();
-  if(millis() - refreshtime >= read_interval){
-    refreshtime += read_interval;
+  String button = ez.buttons.poll();
+  if (button == "Settings") settingsscreen();
+  else if (button == "UserConfig") userconfigscreen();
+
+  if(abs(stopTime - startTime) >= read_interval){
+    startTime = millis();
     BMPsensor();
     SHTsensor();
     DHTsensor();
@@ -325,28 +332,24 @@ void loop(){
     ez.canvas.print(temp);
     ez.canvas.pos(15, 140);
     ez.canvas.println(humid);
-  }
 
-  String button = ez.buttons.poll();
-  if (button == "Settings") settingsscreen();
-  else if (button == "UserConfig") userconfigscreen();
-
-  if(iscard){
-    if(filedate != updatedate()){initSDcard();}
-    Serial.println(updatedate());
-    String Data = updatetime() +","+String(sht30_temp) +","+ String(sht30_humid) +","+ String(bmp_pressure) +","+ String(dew_point_env) + "\n";
-    Serial.println(Data);
-    appendFile(SD, fileName.c_str(), Data.c_str());
-  }
-    
-  if(millis() - thingspeak_RefreshTime >= thingspeak_REFRESH_INTERVAL){
-    thingspeak_RefreshTime += thingspeak_REFRESH_INTERVAL;
-    if(WiFi.status()== WL_CONNECTED){
-      // DHTsensor();
-      // dew_point_out = dewpoint_calc(dht_temp, dht_humid);
-      float temp_median = (sht30_temp + bmp_temperature)/2;
-      SendData(temp_median, sht30_humid, bmp_pressure, dew_point_env, dht_temp, dht_humid, dew_point_dht);
+    if(iscard){
+      if(filedate != updatedate()){initSDcard();}
+      Serial.println(updatedate());
+      String Data = updatetime() +","+String(sht30_temp) +","+ String(sht30_humid) +","+ String(bmp_pressure) +","+ String(dew_point_env) + "\n";
+      Serial.println(Data);
+      appendFile(SD, fileName.c_str(), Data.c_str());
     }
+    
+    if(loop_counter == sendinloop){
+        loop_counter = 1;
+      if(WiFi.status()== WL_CONNECTED){
+        float temp_median = (sht30_temp + bmp_temperature)/2;
+        SendData(temp_median, sht30_humid, bmp_pressure, dew_point_env, dht_temp, dht_humid, dew_point_dht);
+      }
+    }
+    else loop_counter++;
   }
+  stopTime = millis();
   M5.update();
 }
