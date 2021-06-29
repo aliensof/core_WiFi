@@ -11,7 +11,7 @@
 #include <Update.h>
 #include <M5ez.h>
 #include <ezTime.h>
-// #include <DHT.h>
+#include <DHT.h>
 
 // ----- Images used in the project ----- //
 #include "humidity.c"
@@ -19,14 +19,13 @@
 // ---------------------------------------
 
 #define FIRMWARE_VERSION  0.3
-// String THINGSPEAK_WRITE_API_KEY = "L2YDOBGDTBKPCSA3";
 String THINGSPEAK_WRITE_API_KEY = "HC3DPB783UAXLLMS";
-#define IP "184.106.153.149"
-#define PDN_AUTO true
+HTTPClient http; // Initialize our HTTP client
+const char* server = "http://api.thingspeak.com/update";
 
-// #define DHTPIN 5
-// #define DHTTYPE DHT22
-// DHT dht(DHTPIN, DHTTYPE);
+#define DHTPIN 5
+#define DHTTYPE DHT22
+DHT dht(DHTPIN, DHTTYPE);
 
 uint64_t cardSize = 0;
 SHT3X sht30;
@@ -35,15 +34,14 @@ Adafruit_BMP280 bmp;
 String fileName;
 String filedate;
 bool iscard = false;
-String returndata;
 float sht30_humid = 00.0;
 float sht30_temp = 00.0;
 float bmp_pressure = 00.0;
 float bmp_temperature = 00.0;
-float dew_point_in = 00.0;
-// float dht_temp = 00.0;
-// float dht_humid = 00.0;
-// float dew_point_out = 00.0;
+float dew_point_env = 00.0;
+float dht_temp = 00.0;
+float dht_humid = 00.0;
+float dew_point_dht = 00.0;
 
 /*----User Configurations----*/
 String devicename = "Omega3Galil";
@@ -72,6 +70,10 @@ String updatetime(){
 String updatedate(){
   return String(ez.clock.tz.dateTime("d_M_Y"));
 }
+
+/***************************************/
+/************GUI INTERFACE**************/
+/***************************************/
 
 void mainscreen(){
   ez.screen.clear(0xFFFF);
@@ -169,68 +171,35 @@ void userconfigscreen(){
   mainscreen();
 }
 
-void _readSerial(int t=2500){
-  returndata = "";
-  delay(t);
-  while(Serial2.available()){
-    if(Serial2.available()>0) returndata += (char)Serial2.read();
-  }
-  if(returndata.length() == 0) _readSerial();
-  else Serial.println(returndata);
-}
+/***************************************/
 
-void timeInit(){
-  Serial2.println("AT+CSNTPSTART=\"jp.ntp.org.cn\"");   // Configure the SNTP server.
-  _readSerial();
-  Serial2.println("AT+CCLK?");        // Query time
-  _readSerial();
-  Serial2.println("AT+CSNTPSTOP");    // Stop querying network time
-  _readSerial();  
-}
+void SendData(float Tin, float Hin, float Pin, float Tdp_in, float dht_t, float dht_h, float Tdp_dht){
+  http.begin(server);
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
-void tcpclient(float Tin, float Hin, float Pin, float Tdp_in){
-  Serial2.println("AT+CSTT");   // Start task and set APN.
-  _readSerial();
-  Serial2.println("AT+CIICR");
-  _readSerial();
-  Serial2.println("AT+CIFSR");
-  _readSerial();
-  String cmd = "AT+CIPSTART=\"TCP\",\"";
-  cmd += IP;
-  cmd += "\",80";
-  Serial2.println(cmd);
-  delay(2000);
-  if(Serial2.find("Error")){
-    Serial.println("AT+CIPSTART error");
-    // tcpclient(sht30_temp, sht30_humid, bmp_temperature, bmp_pressure, dew_point_in);
-  }
+  // Data to send with HTTP POST
+  String httpRequestData  = "api_key=";
+  httpRequestData += THINGSPEAK_WRITE_API_KEY;
+  httpRequestData += "&field1=";
+  httpRequestData += String(Tin);
+  httpRequestData += "&field2=";
+  httpRequestData += String(Hin);
+  httpRequestData += "&field3=";
+  httpRequestData += String(Pin);
+  httpRequestData += "&field4=";
+  httpRequestData += String(Tdp_in);
+  httpRequestData += "&field5=";
+  httpRequestData += String(dht_t);
+  httpRequestData += "&field6=";
+  httpRequestData += String(dht_h);
+  httpRequestData += "&field7=";
+  httpRequestData += String(Tdp_dht);
 
-  String getStr = "GET https://api.thingspeak.com/update?api_key=";
-  getStr += THINGSPEAK_WRITE_API_KEY;
-  getStr += "&field1=";
-  getStr += String(Tin);
-  getStr += "&field2=";
-  getStr += String(Hin);
-  getStr += "&field3=";
-  getStr += String(Pin);
-  getStr += "&field4=";
-  getStr += String(Tdp_in);
-  // getStr += "&field5=";
-  // getStr += String(Tout);
-  // getStr += "&field6=";
-  // getStr += String(Hout);
-  // getStr += "&field7=";
-  // getStr += String(Tdp_out);
-
-  cmd = "AT+CIPSEND=";
-  cmd += String(getStr.length()+2);
-  Serial2.println(cmd);
-  delay(5000);
-  if(Serial2.find(">")) Serial2.println(getStr);
-  else{
-    Serial2.println("AT+CIPCLOSE");
-    Serial.println("connection closed");
-  }
+  // Send HTTP POST request
+  int httpResponseCode = http.POST(httpRequestData);
+  Serial.print("HTTP Response code is: ");
+  Serial.println(httpResponseCode);
+  http.end();
 }
 
 void BMPsensor(){
@@ -253,6 +222,11 @@ void SHTsensor(){
     sht30_temp = 00.0;
     sht30_humid = 00.0;
   }
+}
+
+void DHTsensor(){
+  dht_temp = dht.readTemperature();
+  dht_humid = dht.readHumidity();
 }
 
 void writeFile(fs::FS &fs, const char *filename, const char *message){
@@ -317,54 +291,15 @@ void initSDcard(){
   writeFile(SD, fileName.c_str(), "Time,Temperature[C],Humidity[%],Pressure[Pa]\n");
 }
 
-void simInit(){
-  if(PDN_AUTO == true){
-    // --- PDN Auto-activation ---
-    Serial.println( "Check SIM Card...\n" );
-    Serial2.println("AT+CPIN?");    // Check SIM card status
-    _readSerial();
-    Serial2.println("AT+CSQ");      // Check RF Signal
-    _readSerial();
-    // Serial2.println("AT+CGREG=1");   // Check PS service
-    // _readSerial();
-    Serial2.println("AT+CGREG?");   // Check PS service
-    _readSerial(5000);
-    Serial2.println("AT+CGACT?");   // Activated automativally
-    _readSerial(5000);
-    Serial2.println("AT+COPS?");    // Check operator information
-    _readSerial(3000);
-    Serial2.println("AT+CGCONTRDP"); // Attached PS domain and got IP address automatically
-    _readSerial();
-  }
-  else{
-    // --- APN manual configuration --- 
-    Serial.println( "Check SIM Card...\n" );
-    Serial2.println("AT+CPIN?");    // Check SIM card status
-    _readSerial();
-    Serial2.println("AT+CFUN=0");   // Disable RF Signal
-    _readSerial();
-    Serial2.println("AT*MCGDEFCONT=\"IP\",\"internet.golantelecom.net.il\"");   // Set APN manually
-    _readSerial();
-    Serial2.println("AT+CFUN=1");   // Enable RF
-    _readSerial();
-    Serial2.println("AT+CGREG?");    // Inquiry PS service.
-    _readSerial();
-    Serial2.println("AT+CGCONTRDP"); // Attached PS domain and got IP address automatically
-    _readSerial();
-  }
-  // timeInit();
-}
-
 void setup(){
   M5.begin();
   M5.Power.begin();
   Wire.begin();
   ez.begin();
-  Serial2.begin(115200, SERIAL_8N1, 5, 13);
   ez.wifi.begin();
-  delay(1500);
-  simInit();
-  delay(1500);
+  delay(2000);
+  dht.begin();
+  delay(2000);
   mainscreen();
   if(WiFi.status()== WL_CONNECTED) initSDcard();
 } 
@@ -375,9 +310,12 @@ void loop(){
     refreshtime += read_interval;
     BMPsensor();
     SHTsensor();
+    DHTsensor();
+    dew_point_dht = dewpoint_calc(dht_temp, dht_humid);
+    Serial.printf("DHT temperature: %2.2f[C]  DHT Humidity: %0.2f[%%]  DewPoint: %2.2f[C]\n", dht_temp, dht_humid, dew_point_dht); 
     float temp_median = (sht30_temp + bmp_temperature)/2;
-    dew_point_in = dewpoint_calc(temp_median, sht30_humid);
-    Serial.printf("temperature: %2.2f[C]  Humidity: %0.2f[%%]  Pressure: %0.2f[mBar]  DewPoint: %2.2f[C]\n", temp_median, sht30_humid, bmp_pressure, dew_point_in); 
+    dew_point_env = dewpoint_calc(temp_median, sht30_humid);
+    Serial.printf("temperature: %2.2f[C]  Humidity: %0.2f[%%]  Pressure: %0.2f[mBar]  DewPoint: %2.2f[C]\n", temp_median, sht30_humid, bmp_pressure, dew_point_env); 
     char temp[5];
     char humid[5];
     dtostrf(sht30_temp, 3, 1, temp);
@@ -396,19 +334,19 @@ void loop(){
   if(iscard){
     if(filedate != updatedate()){initSDcard();}
     Serial.println(updatedate());
-    String Data = updatetime() +","+String(sht30_temp) +","+ String(sht30_humid) +","+ String(bmp_pressure) +","+ String(dew_point_in) + "\n";
+    String Data = updatetime() +","+String(sht30_temp) +","+ String(sht30_humid) +","+ String(bmp_pressure) +","+ String(dew_point_env) + "\n";
     Serial.println(Data);
     appendFile(SD, fileName.c_str(), Data.c_str());
   }
-  else if(WiFi.status() == WL_CONNECTED && !iscard) initSDcard();
     
   if(millis() - thingspeak_RefreshTime >= thingspeak_REFRESH_INTERVAL){
     thingspeak_RefreshTime += thingspeak_REFRESH_INTERVAL;
-    // DHTsensor();
-    // dew_point_out = dewpoint_calc(dht_temp, dht_humid);
-    float temp_median = (sht30_temp + bmp_temperature)/2;
-    // Serial.printf("temperature_out: %2.2f[C]  Humidity_out: %0.2f[%%]  DewPoint_out: %2.2f[C]\n", dht_temp, dht_humid, dew_point_out); 
-    tcpclient(temp_median, sht30_humid, bmp_pressure, dew_point_in);
+    if(WiFi.status()== WL_CONNECTED){
+      // DHTsensor();
+      // dew_point_out = dewpoint_calc(dht_temp, dht_humid);
+      float temp_median = (sht30_temp + bmp_temperature)/2;
+      SendData(temp_median, sht30_humid, bmp_pressure, dew_point_env, dht_temp, dht_humid, dew_point_dht);
+    }
   }
   M5.update();
 }
